@@ -79,7 +79,6 @@ class SGLang():
             model_type=self.args.model_type,
             model_repo_name=Path(self.args.model_path).name
         )
-        
         self.progress_update_data = dict()
         self.last_progress_update = time.time()
         self.server_args = ServerArgs.from_cli_args(self.args)
@@ -92,7 +91,6 @@ class SGLang():
             trust_remote_code=self.server_args.trust_remote_code,
             revision=self.server_args.revision,
         )
-
         asyncio.run(self.run_engine())
 
 
@@ -100,68 +98,46 @@ class SGLang():
         return f'{self.args.tensor_parallel_size}x{torch.cuda.get_device_name(0)}'
 
 
-    async def generate(self, job_batch_data):
-
+    async def process_job_batch(self, job_batch_data):
         arrival_time = time.time()
-        job_id_batch, prompt_input_ids_batch, sampling_params_batch = self.parse_input_data(job_batch_data)
-        generator = await self.llm_engine.async_generate(
-            input_ids=prompt_input_ids_batch,
-            sampling_params=sampling_params_batch,
-            stream=True
-        )
-        logging.info(f'Job(s) {self.format_job_id_batch(job_id_batch)} added.')
-        async for output in generator:
-            job_id = job_id_batch[output.get('index')]
-            if not output.get('meta_info').get('finish_reason'):
-                self.progress_update_data[job_id] = self.get_result(output, arrival_time)
-                self.update_progress()
-            else:
-                self.api_worker.send_job_results(
-                    self.get_result(output, arrival_time),
-                    job_id=job_id,
-                    wait_for_response=False,
-                    error_callback=self.error_callback
-                )
-                self.progress_update_data.pop(job_id, None)
+        valid_jobs, invalid_jobs  = self.validate_and_format_job_batch_data(job_batch_data)
+        for job_id, invalid_job in invalid_jobs.items():
+            logging.info(f'Job {self.format_job_id(job_id)} rejected: {invalid_job.get("error")}')
+            self.api_worker.send_job_results(
+                self.get_result(invalid_job, arrival_time),
+                job_id=job_id,
+                wait_for_response=False,
+                error_callback=self.error_callback
+            )
+        if valid_jobs:
+            input_id_batch, sampling_params_batch, job_id_batch = self.get_parameter_batches(valid_jobs)
+            generator = await self.llm_engine.async_generate(
+                input_ids=input_id_batch,
+                sampling_params=sampling_params_batch,
+                stream=True
+            )
+            logging.info(f'Job(s) {", ".join([self.format_job_id(job_id) for job_id in job_id_batch])} added.')
+            async for output in generator:
+                job_id = job_id_batch[output.get('index')]
+                if not output.get('meta_info').get('finish_reason'):
+                    self.progress_update_data[job_id] = self.get_result(output, arrival_time)
+                    self.update_progress()
+                else:
+                    self.api_worker.send_job_results(
+                        self.get_result(output, arrival_time),
+                        job_id=job_id,
+                        wait_for_response=False,
+                        error_callback=self.error_callback
+                    )
+                    self.progress_update_data.pop(job_id, None)
 
 
     async def run_engine(self):
         job_request_generator = self.api_worker.job_request_generator(self.args.max_batch_size)
         for job_batch_data in job_request_generator:
             if job_batch_data:
-                asyncio.ensure_future(self.generate(job_batch_data))
+                asyncio.ensure_future(self.process_job_batch(job_batch_data))
             await asyncio.sleep(0.5)
-
-
-    def parse_input_data(self, job_batch_data):
-        prompt_input_batch = [self.get_prompt_input(job_data) for job_data in job_batch_data]
-        prompt_input_ids_batch = self.tokenizer(prompt_input_batch).get('input_ids')
-
-        valid_prompt_input_ids_batch = list()
-        job_id_batch = list()
-        sampling_params_batch = list()
-        for job_data, prompt_input_ids in zip(job_batch_data, prompt_input_ids_batch):
-            job_id = job_data.get('job_id')
-            input_length = len(prompt_input_ids)
-            if input_length <= self.model_config.context_len:
-                valid_prompt_input_ids_batch.append(prompt_input_ids)
-                job_id_batch.append(job_id)
-                sampling_params_batch.append(self.get_sampling_params(job_data))
-            else:
-                error_msg = f'The context length {input_length} is exceeding the maximum context length {self.model_config.context_len}!'
-                logging.warning(f'Job {job_id} failed: {error_msg}')
-                output = {
-                    'meta_info': {'prompt_tokens': input_length},
-                    'error': error_msg
-                }
-                self.api_worker.send_job_results(
-                    self.get_result(output, arrival_time),
-                    job_id=job_id,
-                    wait_for_response=False,
-                    error_callback=self.error_callback
-                )
-        return job_id_batch, valid_prompt_input_ids_batch, sampling_params_batch
-
 
 
     def error_callback(self, response):
@@ -169,39 +145,72 @@ class SGLang():
         raise response
 
 
-    def get_prompt_input(self, job_data):
-        prompt_input = job_data.get('prompt_input') or job_data.get('text')
-        chat_context = job_data.get('chat_context')
-        job_id = job_data.get('job_id')
-        if chat_context:
-            if not self.validate_chat_context(job_id, chat_context):
-                self.logger.warning(f'Job {job_id} has wrong context shape')
-                return
-            if prompt_input:
-                chat_context.append(
-                    {
-                        "role": "user", 
-                        "content": prompt_input
+    def validate_and_format_job_batch_data(self, job_batch_data):
+        valid_jobs = dict()
+        invalid_jobs = dict()
+        valid_prompt_input_batch = list()
+        valid_job_batch_data = list()
+        
+        for job_data in job_batch_data:
+            prompt_input = job_data.get('prompt_input') or job_data.get('text')
+            chat_context = job_data.get('chat_context')
+            job_id = job_data.get('job_id')
+            if chat_context:
+                if not self.validate_chat_context(job_id, chat_context):
+                    invalid_jobs[job_id] = {
+                        'error': f'Dialog has invalid chat context format! Format should be '
+                                 f'[{{"role": "user/assistant/system", "content": "Message content"}}, ...]'
                     }
-                )
-            prompt_input = self.chat_template.get_prompt(chat_context)
+                else:
+                    if prompt_input:
+                        chat_context.append(
+                            {
+                                "role": "user", 
+                                "content": prompt_input
+                            }
+                        )
+                    
+                    valid_prompt_input_batch.append(self.chat_template.get_prompt(chat_context))
+                    valid_job_batch_data.append(job_data)
 
-        return prompt_input  
+            else:
+                valid_prompt_input_batch.append(prompt_input)
+                valid_job_batch_data.append(job_data)
+
+        prompt_input_ids_batch = self.tokenizer(valid_prompt_input_batch).get('input_ids')
+        for prompt_input_ids, job_data in zip(prompt_input_ids_batch, valid_job_batch_data):
+            job_id = job_data.get('job_id')
+            input_length = len(prompt_input_ids)
+            max_gen_tokens = job_data.get('max_gen_tokens')
+            if input_length < self.model_config.context_len:
+                valid_jobs[job_id] = {
+                    'input_ids': prompt_input_ids,
+                    'sampling_params': self.get_sampling_params(job_data, input_length)
+                }
+            else: 
+                invalid_jobs[job_id] = {
+                    'error': f'Requested token count exceeds the model\'s maximum context length of {self.model_config.context_len} tokens. '
+                             f'You requested a total of {input_length + max_gen_tokens} tokens: {input_length} '
+                             f'tokens from the input messages and {max_gen_tokens} tokens for the completion. '
+                             f'Please reduce the number of tokens in the input messages or the completion to fit within the limit.',
+                    'input_length': input_length
+                }
+        return valid_jobs, invalid_jobs
+
+
+    def get_parameter_batches(self, jobs):
+        input_id_batch, sampling_params_batch, job_id_batch = zip(*[
+            (job.get('input_ids'), job.get('sampling_params'), job_id)
+            for job_id, job in jobs.items()
+        ])
+        return list(input_id_batch), list(sampling_params_batch), list(job_id_batch)
 
 
     def validate_chat_context(self, chat_context):
         for item in chat_context:
             if not isinstance(item, dict) or not all(key in item for key in ("role", "content")):
-                self.api_worker.send_job_results(
-                    {
-                        'error':  f'Dialog has invalid chat context format! Format should be [{{"role": "user/assistant/system", "content": "Message content"}}, ...]',
-                    },
-                    job_id=job_id,
-                    wait_for_response=False,
-                    error_callback=self.error_callback
-                    )
                 return False
-        return True, None
+        return True
 
 
     def update_progress(self):
@@ -227,7 +236,7 @@ class SGLang():
     def get_result(self, output, arrival_time):
         if output:
             meta_info = output.get('meta_info', {})
-            input_length = meta_info.get('prompt_tokens', 0)
+            input_length = meta_info.get('prompt_tokens', 0) or output.get('input_length')
             num_generated_tokens = meta_info.get('completion_tokens', 0)
 
             result = {
@@ -244,19 +253,18 @@ class SGLang():
                 },
                 'model_name': self.args.model_label
             }
-            if output.get('text'):
-                result['text'] = output['text']
             if output.get('error'):
                 result['error'] = output['error']
+            elif output.get('text'):
+                result['text'] = output['text']
+
             return result
         
 
-
-    def get_sampling_params(self, job_data):
-        
+    def get_sampling_params(self, job_data, input_length):
         sampling_params_keys = inspect.signature(SamplingParams).parameters.keys()
         sampling_params = {key: job_data[key] for key in sampling_params_keys if key in job_data}
-        sampling_params['max_new_tokens'] = job_data.get('max_gen_tokens')
+        sampling_params['max_new_tokens'] = min(job_data.get('max_gen_tokens'), self.model_config.context_len - input_length -1)
         return sampling_params #SamplingParams(**sampling_params)
 
 
@@ -318,21 +326,23 @@ class SGLang():
         args.model_family = args.model_family or self.extract_family(args)
         return args
 
+
     def extract_model_size(self, args):
         match = re.search(r'(\d+B)', Path(args.model_path).name.upper())  # Matches arbitrary number of digits followed by 'B'
         return match.group(1) if match else None
         
-
 
     def extract_quantization(self, args):
         for quantization in QUANTIZATIONS:
             if quantization in Path(args.model_path).name.lower():
                 return quantization
 
+
     def extract_family(self, args):
         for family in LLM_FAMILIES:
             if family.lower() in Path(args.model_path).name.lower():
                 return family
+
 
     def exit_callback(self):
         self.llm_engine.shutdown()
@@ -340,8 +350,9 @@ class SGLang():
         torch.cuda.empty_cache()
 
 
-    def format_job_id_batch(self, job_id_batch):
-        return ", ".join(['#' + job_id.split("#")[1] for job_id in job_id_batch])
+    def format_job_id(self, job_id):
+        uuid, seperator, counter = job_id.partition('#')
+        return seperator + counter if counter else uuid
 
 
 if __name__ == "__main__":
