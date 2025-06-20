@@ -9,7 +9,7 @@ Supported models:
 For a full list of current supported models see [here](https://docs.sglang.ai/supported_models/generative_models.html)
 
 
-## How to setup a AIME API vLLM worker with MLC
+## How to setup a AIME API SGLang worker with MLC
 
 ### Setup SGLang
 
@@ -52,7 +52,7 @@ e.g. to download LLama3.1 70B fp8 Instruct model:
 awi download-weights neuralmagic/Meta-Llama-3.1-70B-Instruct-FP8 -o /path/to/your/model/weights/
 ```
 
-## How to start a AIME API vLLM worker
+## How to start a AIME API SGLang worker
 
 ### Running an LLM
 
