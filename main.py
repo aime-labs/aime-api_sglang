@@ -84,7 +84,14 @@ class SGLang():
         self.last_progress_update = time.time()
         self.server_args = ServerArgs.from_cli_args(self.args)
         self.model_config = ModelConfig.from_server_args(self.server_args)
+        self.chat_template = get_chat_template_by_model_path(self.args.model_path)
         self.llm_engine = sgl.Engine(server_args=self.server_args)
+        self.tokenizer = get_tokenizer(
+            self.server_args.tokenizer_path,
+            tokenizer_mode=self.server_args.tokenizer_mode,
+            trust_remote_code=self.server_args.trust_remote_code,
+            revision=self.server_args.revision,
+        )
 
         asyncio.run(self.run_engine())
 
@@ -93,32 +100,53 @@ class SGLang():
         return f'{self.args.tensor_parallel_size}x{torch.cuda.get_device_name(0)}'
 
 
-    async def generate(self, job_data):
+    async def generate(self, job_batch_data):
 
         arrival_time = time.time()
-        job_id = job_data.get('job_id')
-        prompt_input_ids = self.get_prompt_input_ids(job_data)
-        if prompt_input_ids:
+        job_id_batch, prompt_input_ids_batch, sampling_params_batch = self.parse_input_data(job_batch_data)
+        generator = await self.llm_engine.async_generate(
+            input_ids=prompt_input_ids_batch,
+            sampling_params=sampling_params_batch,
+            stream=True
+        )
+        logging.info(f'Job(s) {self.format_job_id_batch(job_id_batch)} added.')
+        async for output in generator:
+            job_id = job_id_batch[output.get('index')]
+            if not output.get('meta_info').get('finish_reason'):
+                self.progress_update_data[job_id] = self.get_result(output, arrival_time)
+                self.update_progress()
+            else:
+                self.api_worker.send_job_results(
+                    self.get_result(output, arrival_time),
+                    job_id=job_id,
+                    wait_for_response=False,
+                    error_callback=self.error_callback
+                )
+                self.progress_update_data.pop(job_id, None)
+
+
+    async def run_engine(self):
+        job_request_generator = self.api_worker.job_request_generator(self.args.max_batch_size)
+        for job_batch_data in job_request_generator:
+            if job_batch_data:
+                asyncio.ensure_future(self.generate(job_batch_data))
+            await asyncio.sleep(0.5)
+
+
+    def parse_input_data(self, job_batch_data):
+        prompt_input_batch = [self.get_prompt_input(job_data) for job_data in job_batch_data]
+        prompt_input_ids_batch = self.tokenizer(prompt_input_batch).get('input_ids')
+
+        valid_prompt_input_ids_batch = list()
+        job_id_batch = list()
+        sampling_params_batch = list()
+        for job_data, prompt_input_ids in zip(job_batch_data, prompt_input_ids_batch):
+            job_id = job_data.get('job_id')
             input_length = len(prompt_input_ids)
             if input_length <= self.model_config.context_len:
-                generator = await self.llm_engine.async_generate(
-                    input_ids=prompt_input_ids,
-                    sampling_params=self.get_sampling_params(job_data),
-                    stream=True
-                )
-
-                async for output in generator:
-                    if not output.get('meta_info').get('finish_reason'):
-                        self.progress_update_data[job_id] = self.get_result(output, arrival_time)
-                        self.update_progress()
-                    else:
-                        self.api_worker.send_job_results(
-                            self.get_result(output, arrival_time),
-                            job_id=job_id,
-                            wait_for_response=False,
-                            error_callback=self.error_callback
-                        )
-                        self.progress_update_data.pop(job_id, None)
+                valid_prompt_input_ids_batch.append(prompt_input_ids)
+                job_id_batch.append(job_id)
+                sampling_params_batch.append(self.get_sampling_params(job_data))
             else:
                 error_msg = f'The context length {input_length} is exceeding the maximum context length {self.model_config.context_len}!'
                 logging.warning(f'Job {job_id} failed: {error_msg}')
@@ -132,19 +160,7 @@ class SGLang():
                     wait_for_response=False,
                     error_callback=self.error_callback
                 )
-            
-
-
-    async def run_engine(self):
-        job_request_generator = self.api_worker.job_request_generator(self.args.max_batch_size)
-        for job_batch_data in job_request_generator:
-            new_jobs = list()
-            for job_data in job_batch_data:
-                asyncio.ensure_future(self.generate(job_data))
-                new_jobs.append('#' + job_data.get('job_id').split('#')[1])
-            if new_jobs:
-                logging.info(f'Job(s) {", ".join(new_jobs)} added.')
-            await asyncio.sleep(0.5)
+        return job_id_batch, valid_prompt_input_ids_batch, sampling_params_batch
 
 
 
@@ -153,12 +169,13 @@ class SGLang():
         raise response
 
 
-    def get_prompt_input_ids(self, job_data):
+    def get_prompt_input(self, job_data):
         prompt_input = job_data.get('prompt_input') or job_data.get('text')
         chat_context = job_data.get('chat_context')
+        job_id = job_data.get('job_id')
         if chat_context:
-            if not self.validate_chat_context(job_data.get('job_id'), chat_context):
-                self.logger.warning('Wrong context shape')
+            if not self.validate_chat_context(job_id, chat_context):
+                self.logger.warning(f'Job {job_id} has wrong context shape')
                 return
             if prompt_input:
                 chat_context.append(
@@ -167,27 +184,24 @@ class SGLang():
                         "content": prompt_input
                     }
                 )
-            chat_template = get_chat_template_by_model_path(self.args.model_path)
-            prompt_input = chat_template.get_prompt(chat_context)
+            prompt_input = self.chat_template.get_prompt(chat_context)
 
-        tokenizer = get_tokenizer(
-            self.server_args.tokenizer_path,
-            tokenizer_mode=self.server_args.tokenizer_mode,
-            trust_remote_code=self.server_args.trust_remote_code,
-            revision=self.server_args.revision,
-        )
-        return tokenizer(prompt_input).get('input_ids')
-      
+        return prompt_input  
 
-    def validate_chat_context(self, job_id, chat_context):
+
+    def validate_chat_context(self, chat_context):
         for item in chat_context:
             if not isinstance(item, dict) or not all(key in item for key in ("role", "content")):
-                result = {
-                    'error':  f'Dialog has invalid chat context format! Format should be [{{"role": "user/assistant/system", "content": "Message content"}}, ...] but is {chat_context}',
-                }
-                self.api_worker.send_job_results(result, job_id=job_id)
+                self.api_worker.send_job_results(
+                    {
+                        'error':  f'Dialog has invalid chat context format! Format should be [{{"role": "user/assistant/system", "content": "Message content"}}, ...]',
+                    },
+                    job_id=job_id,
+                    wait_for_response=False,
+                    error_callback=self.error_callback
+                    )
                 return False
-        return True
+        return True, None
 
 
     def update_progress(self):
@@ -309,6 +323,7 @@ class SGLang():
         return match.group(1) if match else None
         
 
+
     def extract_quantization(self, args):
         for quantization in QUANTIZATIONS:
             if quantization in Path(args.model_path).name.lower():
@@ -324,6 +339,9 @@ class SGLang():
         del self.llm_engine
         torch.cuda.empty_cache()
 
+
+    def format_job_id_batch(self, job_id_batch):
+        return ", ".join(['#' + job_id.split("#")[1] for job_id in job_id_batch])
 
 
 if __name__ == "__main__":
