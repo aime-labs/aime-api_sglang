@@ -13,14 +13,13 @@ For a full list of current supported models see [here](https://docs.sglang.ai/su
 
 ### Setup SGLang
 
-(Setup with uv pip install didn't work on my case)
+(Setup with uv pip install didn't work in my case)
 
 ```bash
-mlc create sglang Pytorch 2.6.0 
+mlc create sglang Pytorch 2.7.0 
 mlc open sglang
 
-
-git clone https://github.com/sgl-project/sglang
+git clone -b v0.4.7.post1 https://github.com/sgl-project/sglang
 
 cd sglang
 
