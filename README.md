@@ -49,7 +49,7 @@ awi download-weights {model name} -o /path/to/your/model/weights/
 e.g. to download LLama3.1 70B fp8 Instruct model:
 
 ```bash
-awi download-weights neuralmagic/Meta-Llama-3.1-70B-Instruct-FP8 -o /path/to/your/model/weights/
+awi download-weights meta-llama/Llama-3.3-70B-Instruct -o /path/to/your/model/weights/
 ```
 
 ## How to start a AIME API SGLang worker
