@@ -62,27 +62,10 @@ python main.py --api_server http://127.0.0.1:7777 --api_auth_key b07e305b50505ca
 
 ### Running Llama 3.3
 
-Starting Llama 3.3 70B worker on 2x RTX 6000 Ada 48GB GPUs:
+Starting Llama 3.3 70B worker on 4x RTX 6000 Ada 48GB GPUs:
 
 ```bash
-python main.py --api_server http://127.0.0.1:7777 --api_auth_key b07e305b50505ca2b3284b4ae5f65d1 --model-path /path/to/your/model/weights/Llama-3.3-70B-Instruct --job_type llama3_3 --max_batch_size 8 --tensor-parallel-size 2
-```
-
-
-### Running Llama 3.1
-
-Starting Llama 3.1 70B worker with fp8 quantization on 2x RTX 6000 Ada 48GB GPUs:
-
-```bash
-python main.py --api_server http://127.0.0.1:7777 --api_auth_key b07e305b50505ca2b3284b4ae5f65d1 --model-path /path/to/your/model/weights/Llama-3.1-70B-Instruct-fp8 --job_type llama3_1 --max_batch_size 8 --tensor-parallel-size 2
-```
-
-### Running Mixtral 8x7B
-
-Starting Mixtral 8x7B worker with fp8 quantization on 2x RTX 6000 Ada 48GB GPUs:
-
-```bash
-python3 main.py --api_server http://127.0.0.1:7777 --api_auth_key b07e305b50505ca2b3284b4ae5f65d1 --model-path /path/to/your/model/weights/Mixtral-8x7B-Instruct-v0.1-hf --job-type mixtral --max_batch_size 8 --tensor-parallel-size 2
+python main.py --api_server http://127.0.0.1:7777 --api_auth_key b07e305b50505ca2b3284b4ae5f65d1 --model-path /path/to/your/model/weights/Llama-3.3-70B-Instruct --job_type llama3 --max_batch_size 8 --tensor-parallel-size 4
 ```
 
 ### Adjust maximum context length
@@ -91,8 +74,8 @@ python3 main.py --api_server http://127.0.0.1:7777 --api_auth_key b07e305b50505c
 Starting Llama 3.3 70B worker on 2x RTX 6000 Ada 48GB GPUs with a maximum context length 8192 tokens:
 
 ```bash
-python main.py --api_server http://127.0.0.1:7777 --api_auth_key b07e305b50505ca2b3284b4ae5f65d1 --model-path /path/to/your/model/weights/Llama-3.3-70B-Instruct --job_type llama3_3 --max_batch_size 8 --tensor-parallel-size 2 --context-length 8192
-
+python main.py --api_server http://127.0.0.1:7777 --api_auth_key b07e305b50505ca2b3284b4ae5f65d1 --model-path /path/to/your/model/weights/Llama-3.3-70B-Instruct --job_type llama3 --max_batch_size 8 --tensor-parallel-size 2 --context-length 8192
+```
 
 Copyright (c) AIME GmbH and affiliates. Find more info at https://www.aime.info/api
 
