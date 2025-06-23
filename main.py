@@ -156,7 +156,7 @@ class SGLang():
             chat_context = job_data.get('chat_context')
             job_id = job_data.get('job_id')
             if chat_context:
-                if not self.validate_chat_context(job_id, chat_context):
+                if not self.validate_chat_context(chat_context):
                     invalid_jobs[job_id] = {
                         'error': f'Dialog has invalid chat context format! Format should be '
                                  f'[{{"role": "user/assistant/system", "content": "Message content"}}, ...]'
