@@ -256,7 +256,7 @@ class SGLang():
             if output.get('error'):
                 result['error'] = output['error']
             elif output.get('text'):
-                result['text'] = output['text']
+                result['text'] = output['text'].removeprefix('assistant\n\n')
 
             return result
         
