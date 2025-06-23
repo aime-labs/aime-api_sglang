@@ -1,5 +1,5 @@
 import asyncio
-from argparse import ArgumentParser
+import argparse
 import time
 import inspect
 from pathlib import Path
@@ -269,7 +269,8 @@ class SGLang():
 
 
     def load_flags(self):
-        parser = ArgumentParser()
+        parser = argparse.ArgumentParser(conflict_handler='resolve')
+        ServerArgs.add_cli_args(parser)
         parser.add_argument(
             "--max_batch_size", type=int, default=256,
             help="Maximum batch size"
@@ -277,6 +278,14 @@ class SGLang():
         parser.add_argument(
             "--job_type", type=str, default=DEFAULT_WORKER_JOB_TYPE,
             help="Worker job type for the API Server"
+        )
+        parser.add_argument(
+            "--model", type=str, required=True,
+            help="The path of the model weights. This can be a local folder or a Hugging Face repo ID. Translates to --model-path in SGLang."
+        )
+        parser.add_argument(
+            "--model-path", type=str,
+            help=argparse.SUPPRESS # To override original sglang cli arg to become optional
         )
         parser.add_argument(
             "--model_label", type=str,
@@ -318,8 +327,9 @@ class SGLang():
             "--dev", action='store_true',
             help="Sets logger level to DEBUG",
         )
-        ServerArgs.add_cli_args(parser)
+
         args = parser.parse_args()
+        args.model_path = args.model
         args.model_label = args.model_label or Path(args.model_path).name
         args.model_size = args.model_size or self.extract_model_size(args)
         args.model_quantization = args.model_quantization or self.extract_quantization(args) or 'fp16'
