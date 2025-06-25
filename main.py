@@ -104,7 +104,7 @@ class SGLang():
         for job_id, invalid_job in invalid_jobs.items():
             logging.info(f'Job {self.format_job_id(job_id)} rejected: {invalid_job.get("error")}')
             self.api_worker.send_job_results(
-                self.get_result(invalid_job, arrival_time),
+                self.get_result(invalid_job, arrival_time, time.time()),
                 job_id=job_id,
                 wait_for_response=False,
                 error_callback=self.error_callback
@@ -117,14 +117,17 @@ class SGLang():
                 stream=True
             )
             logging.info(f'Job(s) {", ".join([self.format_job_id(job_id) for job_id in job_id_batch])} added.')
+            start_time_processing = None
             async for output in generator:
+                if output and not start_time_processing:
+                    start_time_processing = time.time()
                 job_id = job_id_batch[output.get('index')]
                 if not output.get('meta_info').get('finish_reason'):
-                    self.progress_update_data[job_id] = self.get_result(output, arrival_time)
+                    self.progress_update_data[job_id] = self.get_result(output, arrival_time, start_time_processing)
                     self.update_progress()
                 else:
                     self.api_worker.send_job_results(
-                        self.get_result(output, arrival_time),
+                        self.get_result(output, arrival_time, start_time_processing),
                         job_id=job_id,
                         wait_for_response=False,
                         error_callback=self.error_callback
@@ -233,12 +236,11 @@ class SGLang():
             )
 
 
-    def get_result(self, output, arrival_time):
+    def get_result(self, output, arrival_time, start_time_processing):
         if output:
             meta_info = output.get('meta_info', {})
             input_length = meta_info.get('prompt_tokens', 0) or output.get('input_length')
             num_generated_tokens = meta_info.get('completion_tokens', 0)
-
             result = {
                 'num_generated_tokens': num_generated_tokens,
                 'max_seq_len': self.model_config.context_len,
@@ -246,7 +248,7 @@ class SGLang():
                 'arrival_time': arrival_time,
                 'finished_time': time.time(),
                 'current_context_length': input_length + num_generated_tokens,
-                'pending_duration': 0,
+                'preprocessing_duration': start_time_processing - arrival_time,
                 'metrics': {
                     'in_num_tokens': input_length,
                     'out_num_tokens': num_generated_tokens, 
