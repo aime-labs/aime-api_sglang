@@ -329,13 +329,13 @@ class SGLang():
             "--dev", action='store_true',
             help="Sets logger level to DEBUG",
         )
-
         args = parser.parse_args()
         args.model_path = args.model
         args.model_label = args.model_label or Path(args.model_path).name
         args.model_size = args.model_size or self.extract_model_size(args)
         args.model_quantization = args.model_quantization or self.extract_quantization(args) or 'fp16'
         args.model_family = args.model_family or self.extract_family(args)
+        args.max_running_requests = args.max_batch_size
         return args
 
 
