@@ -32,7 +32,7 @@ sudo apt install libnuma1
 ### Setup AIME SGLang Worker
 
 ```bash
-git clone https://github.com/sgl-project/sglang
+git clone https://github.com/aime-labs/aime-api_sglang
 cd aime-api_sglang
 pip install -r requirements.txt
 
