@@ -69,8 +69,7 @@ class SGLang():
             self.args.job_type, 
             self.args.api_auth_key, 
             self.args.gpu_id, 
-            gpu_name=torch.cuda.get_device_name(0), 
-            num_gpus=self.args.tensor_parallel_size,
+            gpu_name=self.get_gpu_name(), 
             worker_version=VERSION,
             exit_callback=self.exit_callback,
             model_label=self.args.model_label,
@@ -93,6 +92,10 @@ class SGLang():
             revision=self.server_args.revision,
         )
         asyncio.run(self.run_engine())
+
+
+    def get_gpu_name(self):
+        return f'{self.args.tensor_parallel_size}x{torch.cuda.get_device_name(0)}'
 
 
     async def process_job_batch(self, job_batch_data):
@@ -173,28 +176,28 @@ class SGLang():
                     valid_prompt_input_batch.append(self.chat_template.get_prompt(chat_context))
                     valid_job_batch_data.append(job_data)
 
-            elif prompt_input:
+            else:
                 valid_prompt_input_batch.append(prompt_input)
                 valid_job_batch_data.append(job_data)
-        if valid_prompt_input_batch:
-            prompt_input_ids_batch = self.tokenizer(valid_prompt_input_batch).get('input_ids')
-            for prompt_input_ids, job_data in zip(prompt_input_ids_batch, valid_job_batch_data):
-                job_id = job_data.get('job_id')
-                input_length = len(prompt_input_ids)
-                max_gen_tokens = job_data.get('max_gen_tokens')
-                if input_length < self.model_config.context_len:
-                    valid_jobs[job_id] = {
-                        'input_ids': prompt_input_ids,
-                        'sampling_params': self.get_sampling_params(job_data, input_length)
-                    }
-                else: 
-                    invalid_jobs[job_id] = {
-                        'error': f'Requested token count exceeds the model\'s maximum context length of {self.model_config.context_len} tokens. '
-                                f'You requested a total of {input_length + max_gen_tokens} tokens: {input_length} '
-                                f'tokens from the input messages and {max_gen_tokens} tokens for the completion. '
-                                f'Please reduce the number of tokens in the input messages or the completion to fit within the limit.',
-                        'input_length': input_length
-                    }
+
+        prompt_input_ids_batch = self.tokenizer(valid_prompt_input_batch).get('input_ids')
+        for prompt_input_ids, job_data in zip(prompt_input_ids_batch, valid_job_batch_data):
+            job_id = job_data.get('job_id')
+            input_length = len(prompt_input_ids)
+            max_gen_tokens = job_data.get('max_gen_tokens')
+            if input_length < self.model_config.context_len:
+                valid_jobs[job_id] = {
+                    'input_ids': prompt_input_ids,
+                    'sampling_params': self.get_sampling_params(job_data, input_length)
+                }
+            else: 
+                invalid_jobs[job_id] = {
+                    'error': f'Requested token count exceeds the model\'s maximum context length of {self.model_config.context_len} tokens. '
+                             f'You requested a total of {input_length + max_gen_tokens} tokens: {input_length} '
+                             f'tokens from the input messages and {max_gen_tokens} tokens for the completion. '
+                             f'Please reduce the number of tokens in the input messages or the completion to fit within the limit.',
+                    'input_length': input_length
+                }
         return valid_jobs, invalid_jobs
 
 
