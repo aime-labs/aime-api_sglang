@@ -77,7 +77,10 @@ class SGLang():
             model_size=self.args.model_size, 
             model_family=self.args.model_family, 
             model_type=self.args.model_type,
-            model_repo_name=Path(self.args.model_path).name
+            model_repo_name=Path(self.args.model_path).name,
+            framework='SGLang',
+            framework_version=sgl.version.__version__,
+            pytorch_version=torch.version.__version__
         )
         self.progress_update_data = dict()
         self.last_progress_update = time.time()

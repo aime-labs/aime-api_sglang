@@ -23,7 +23,6 @@ git clone -b v0.4.8 https://github.com/sgl-project/sglang
 
 cd sglang
 
-pip install --upgrade pip
 pip install -e "python[all]"
 
 sudo apt install libnuma1
