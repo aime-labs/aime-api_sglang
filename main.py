@@ -133,7 +133,10 @@ class SGLang():
                         error_callback=self.error_callback
                     )
                     self.progress_update_data.pop(job_id, None)
-
+            if self.args.flush_cache:
+                state = await self.llm_engine.tokenizer_manager.get_internal_state()
+                if state[0].get('load') == 0:
+                    await self.llm_engine.tokenizer_manager.flush_cache()
 
     async def run_engine(self):
         job_request_generator = self.api_worker.job_request_generator(self.args.max_batch_size)
@@ -328,6 +331,10 @@ class SGLang():
         parser.add_argument(
             "--dev", action='store_true',
             help="Sets logger level to DEBUG",
+        )
+        parser.add_argument(
+            "--flush_cache", action='store_true',
+            help="Resets cache before every request",
         )
         args = parser.parse_args()
         args.model_path = args.model
