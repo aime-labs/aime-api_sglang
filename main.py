@@ -9,14 +9,11 @@ import logging
 import torch
 
 import sglang as sgl
-from sglang.srt.conversation import chat_templates
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.test.test_utils import is_in_ci
-from sglang.utils import trim_overlap
-from sglang.lang.chat_template import get_chat_template_by_model_path
-from sglang.srt.hf_transformers_utils import get_tokenizer
+
 
 from aime_api_worker_interface import APIWorkerInterface
 
@@ -59,7 +56,6 @@ QUANTIZATIONS = [
     'uint64'
 ]
 
-logger = logging.getLogger(__name__)
 
 class SGLang():
     def __init__(self):
@@ -79,27 +75,26 @@ class SGLang():
             model_family=self.args.model_family, 
             model_type=self.args.model_type,
             model_repo_name=Path(self.args.model_path).name,
+            model_path=self.args.model,
+            category='chat',
             framework='SGLang',
             framework_version=sgl.version.__version__,
-            pytorch_version=torch.version.__version__
+            pytorch_version=torch.version.__version__,
+            trust_remote_code=self.args.trust_remote_code,
+            use_fast_tokenizer=self.args.use_fast_tokenizer,
+            max_batch_size=self.args.max_batch_size
         )
         self.progress_update_data = dict()
         self.last_progress_update = time.time()
         self.server_args = ServerArgs.from_cli_args(self.args)
         self.model_config = ModelConfig.from_server_args(self.server_args)
-        self.chat_template = get_chat_template_by_model_path(self.args.model_path)
         self.llm_engine = sgl.Engine(server_args=self.server_args)
-        self.tokenizer = get_tokenizer(
-            self.server_args.tokenizer_path,
-            tokenizer_mode=self.server_args.tokenizer_mode,
-            trust_remote_code=self.server_args.trust_remote_code,
-            revision=self.server_args.revision,
-        )
         asyncio.run(self.run_engine())
 
 
     async def process_job_batch(self, job_batch_data):
         arrival_time = time.time()
+
         valid_jobs, invalid_jobs  = self.validate_and_format_job_batch_data(job_batch_data)
         for job_id, invalid_job in invalid_jobs.items():
             logging.info(f'Job {self.format_job_id(job_id)} rejected: {invalid_job.get("error")}')
@@ -138,12 +133,13 @@ class SGLang():
                 if state[0].get('load') == 0:
                     await self.llm_engine.tokenizer_manager.flush_cache()
 
+
     async def run_engine(self):
-        job_request_generator = self.api_worker.job_request_generator(self.args.max_batch_size)
+        job_request_generator = self.api_worker.job_request_generator(self.args.max_batch_size, tokenize=True)
         for job_batch_data in job_request_generator:
             if job_batch_data:
                 asyncio.ensure_future(self.process_job_batch(job_batch_data))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
 
 
     def error_callback(self, response):
@@ -154,59 +150,30 @@ class SGLang():
     def validate_and_format_job_batch_data(self, job_batch_data):
         valid_jobs = dict()
         invalid_jobs = dict()
-        valid_prompt_input_batch = list()
-        valid_job_batch_data = list()
-        
         for job_data in job_batch_data:
-            prompt_input = job_data.get('prompt_input') or job_data.get('text')
-            chat_context = job_data.get('chat_context')
             job_id = job_data.get('job_id')
-            if chat_context:
-                if not self.validate_chat_context(chat_context):
-                    invalid_jobs[job_id] = {
-                        'error': f'Dialog has invalid chat context format! Format should be '
-                                 f'[{{"role": "user/assistant/system", "content": "Message content"}}, ...]'
-                    }
-                else:
-                    if prompt_input:
-                        chat_context.append(
-                            {
-                                "role": "user", 
-                                "content": prompt_input
-                            }
-                        )
-                    
-                    valid_prompt_input_batch.append(self.chat_template.get_prompt(chat_context))
-                    valid_job_batch_data.append(job_data)
-
-            elif prompt_input:
-                valid_prompt_input_batch.append(prompt_input)
-                valid_job_batch_data.append(job_data)
-        if valid_prompt_input_batch:
-            prompt_input_ids_batch = self.tokenizer(valid_prompt_input_batch).get('input_ids')
-            for prompt_input_ids, job_data in zip(prompt_input_ids_batch, valid_job_batch_data):
-                job_id = job_data.get('job_id')
-                input_length = len(prompt_input_ids)
-                max_gen_tokens = job_data.get('max_gen_tokens')
-                if input_length < self.model_config.context_len:
-                    valid_jobs[job_id] = {
-                        'input_ids': prompt_input_ids,
-                        'sampling_params': self.get_sampling_params(job_data, input_length)
-                    }
-                else: 
-                    invalid_jobs[job_id] = {
-                        'error': f'Requested token count exceeds the model\'s maximum context length of {self.model_config.context_len} tokens. '
-                                f'You requested a total of {input_length + max_gen_tokens} tokens: {input_length} '
-                                f'tokens from the input messages and {max_gen_tokens} tokens for the completion. '
-                                f'Please reduce the number of tokens in the input messages or the completion to fit within the limit.',
-                        'input_length': input_length
-                    }
+            input_token_ids = job_data.get('input_token_ids')
+            input_length = len(input_token_ids)
+            max_gen_tokens = job_data.get('max_gen_tokens')
+            if input_length < self.model_config.context_len:
+                valid_jobs[job_id] = {
+                    'input_token_ids': input_token_ids,
+                    'sampling_params': self.get_sampling_params(job_data, input_length)
+                }
+            else: 
+                invalid_jobs[job_id] = {
+                    'error': f'Requested token count exceeds the model\'s maximum context length of {self.model_config.context_len} tokens. '
+                            f'You requested a total of {input_length + max_gen_tokens} tokens: {input_length} '
+                            f'tokens from the input messages and {max_gen_tokens} tokens for the completion. '
+                            f'Please reduce the number of tokens in the input messages or the completion to fit within the limit.',
+                    'input_length': input_length
+                }
         return valid_jobs, invalid_jobs
 
 
     def get_parameter_batches(self, jobs):
         input_id_batch, sampling_params_batch, job_id_batch = zip(*[
-            (job.get('input_ids'), job.get('sampling_params'), job_id)
+            (job.get('input_token_ids'), job.get('sampling_params'), job_id)
             for job_id, job in jobs.items()
         ])
         return list(input_id_batch), list(sampling_params_batch), list(job_id_batch)
@@ -255,8 +222,7 @@ class SGLang():
                 'metrics': {
                     'in_num_tokens': input_length,
                     'out_num_tokens': num_generated_tokens, 
-                },
-                'model_name': self.args.model_label
+                }
             }
             if output.get('error'):
                 result['error'] = output['error']
@@ -335,6 +301,10 @@ class SGLang():
         parser.add_argument(
             "--flush_cache", action='store_true',
             help="Resets cache before every request",
+        )
+        parser.add_argument(
+            "--use_fast_tokenizer", action='store_true',
+            help="Use fast tokenizer in API Worker Interface",
         )
         args = parser.parse_args()
         args.model_path = args.model
