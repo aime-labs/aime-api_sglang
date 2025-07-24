@@ -65,8 +65,7 @@ class SGLang():
             self.args.job_type, 
             self.args.api_auth_key, 
             self.args.gpu_id, 
-            gpu_name=torch.cuda.get_device_name(0), 
-            num_gpus=self.args.tensor_parallel_size,
+            gpu_name=self.get_gpu_name(), 
             worker_version=VERSION,
             exit_callback=self.exit_callback,
             model_label=self.args.model_label,
@@ -90,6 +89,10 @@ class SGLang():
         self.model_config = ModelConfig.from_server_args(self.server_args)
         self.llm_engine = sgl.Engine(server_args=self.server_args)
         asyncio.run(self.run_engine())
+
+
+    def get_gpu_name(self):
+        return f'{self.args.tensor_parallel_size}x{torch.cuda.get_device_name(0)}'
 
 
     async def process_job_batch(self, job_batch_data):
