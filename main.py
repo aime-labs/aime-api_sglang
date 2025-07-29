@@ -75,13 +75,14 @@ class SGLang():
             model_type=self.args.model_type,
             model_repo_name=Path(self.args.model_path).name,
             model_path=self.args.model,
-            category='chat',
             framework='SGLang',
             framework_version=sgl.version.__version__,
             pytorch_version=torch.version.__version__,
+            auto_tokenize_inputs=True,
             trust_remote_code=self.args.trust_remote_code,
             use_fast_tokenizer=self.args.use_fast_tokenizer,
-            max_batch_size=self.args.max_batch_size
+            max_batch_size=self.args.max_batch_size,
+            max_context_length=self.args.context_length
         )
         self.progress_update_data = dict()
         self.last_progress_update = time.time()
@@ -97,18 +98,8 @@ class SGLang():
 
     async def process_job_batch(self, job_batch_data):
         arrival_time = time.time()
-
-        valid_jobs, invalid_jobs  = self.validate_and_format_job_batch_data(job_batch_data)
-        for job_id, invalid_job in invalid_jobs.items():
-            logging.info(f'Job {self.format_job_id(job_id)} rejected: {invalid_job.get("error")}')
-            self.api_worker.send_job_results(
-                self.get_result(invalid_job, arrival_time, time.time()),
-                job_id=job_id,
-                wait_for_response=False,
-                error_callback=self.error_callback
-            )
-        if valid_jobs:
-            input_id_batch, sampling_params_batch, job_id_batch = self.get_parameter_batches(valid_jobs)
+        if job_batch_data:
+            input_id_batch, sampling_params_batch, job_id_batch = self.get_parameter_batches(job_batch_data)
             generator = await self.llm_engine.async_generate(
                 input_ids=input_id_batch,
                 sampling_params=sampling_params_batch,
@@ -138,7 +129,7 @@ class SGLang():
 
 
     async def run_engine(self):
-        job_request_generator = self.api_worker.job_request_generator(self.args.max_batch_size, tokenize=True)
+        job_request_generator = self.api_worker.job_request_generator(self.args.max_batch_size)
         for job_batch_data in job_request_generator:
             if job_batch_data:
                 asyncio.ensure_future(self.process_job_batch(job_batch_data))
@@ -150,34 +141,15 @@ class SGLang():
         raise response
 
 
-    def validate_and_format_job_batch_data(self, job_batch_data):
-        valid_jobs = dict()
-        invalid_jobs = dict()
-        for job_data in job_batch_data:
-            job_id = job_data.get('job_id')
-            input_token_ids = job_data.get('input_token_ids')
-            input_length = len(input_token_ids)
-            max_gen_tokens = job_data.get('max_gen_tokens')
-            if input_length < self.model_config.context_len:
-                valid_jobs[job_id] = {
-                    'input_token_ids': input_token_ids,
-                    'sampling_params': self.get_sampling_params(job_data, input_length)
-                }
-            else: 
-                invalid_jobs[job_id] = {
-                    'error': f'Requested token count exceeds the model\'s maximum context length of {self.model_config.context_len} tokens. '
-                            f'You requested a total of {input_length + max_gen_tokens} tokens: {input_length} '
-                            f'tokens from the input messages and {max_gen_tokens} tokens for the completion. '
-                            f'Please reduce the number of tokens in the input messages or the completion to fit within the limit.',
-                    'input_length': input_length
-                }
-        return valid_jobs, invalid_jobs
-
-
-    def get_parameter_batches(self, jobs):
+    def get_parameter_batches(self, job_batch_data):
+        
         input_id_batch, sampling_params_batch, job_id_batch = zip(*[
-            (job.get('input_token_ids'), job.get('sampling_params'), job_id)
-            for job_id, job in jobs.items()
+            (
+                job_data.get('chat_context') or job_data.get('prompt_input', []),
+                self.get_sampling_params(job_data),
+                job_data.get('job_id')
+            )
+            for job_data in job_batch_data
         ])
         return list(input_id_batch), list(sampling_params_batch), list(job_id_batch)
 
@@ -235,7 +207,8 @@ class SGLang():
             return result
         
 
-    def get_sampling_params(self, job_data, input_length):
+    def get_sampling_params(self, job_data):
+        input_length = len(job_data.get('chat_context') or job_data.get('prompt_input', []))
         sampling_params_keys = inspect.signature(SamplingParams).parameters.keys()
         sampling_params = {key: job_data[key] for key in sampling_params_keys if key in job_data}
         sampling_params['max_new_tokens'] = min(job_data.get('max_gen_tokens'), self.model_config.context_len - input_length -1)
