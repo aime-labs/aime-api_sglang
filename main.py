@@ -82,7 +82,8 @@ class SGLang():
             trust_remote_code=self.args.trust_remote_code,
             use_fast_tokenizer=self.args.use_fast_tokenizer,
             max_batch_size=self.args.max_batch_size,
-            max_context_length=self.args.context_length
+            max_context_length=self.args.context_length,
+            reject_high_context_length=False
         )
         self.progress_update_data = dict()
         self.last_progress_update = time.time()
@@ -99,11 +100,15 @@ class SGLang():
     async def process_job_batch(self, job_batch_data):
         arrival_time = time.time()
         if job_batch_data:
-            input_id_batch, sampling_params_batch, job_id_batch = self.get_parameter_batches(job_batch_data)
+            input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = self.get_parameter_batches(job_batch_data)
+
             generator = await self.llm_engine.async_generate(
                 input_ids=input_id_batch,
                 sampling_params=sampling_params_batch,
-                stream=True
+                stream=True,
+                image_data=image_data_batch,
+                #audio_data=audio_data_batch,
+                #video_data=video_data_batch for later SGLang versions
             )
             logging.info(f'Job(s) {", ".join([self.format_job_id(job_id) for job_id in job_id_batch])} added.')
             start_time_processing = None
@@ -143,15 +148,18 @@ class SGLang():
 
     def get_parameter_batches(self, job_batch_data):
         
-        input_id_batch, sampling_params_batch, job_id_batch = zip(*[
+        input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = zip(*[
             (
                 job_data.get('chat_context') or job_data.get('prompt_input', []),
                 self.get_sampling_params(job_data),
-                job_data.get('job_id')
+                job_data.get('job_id'),
+                job_data.get('multimodal_data', {}).get('chat_context', {}).get('image', []),
+                job_data.get('multimodal_data', {}).get('chat_context', {}).get('audio', []),
+                job_data.get('multimodal_data', {}).get('chat_context', {}).get('video', [])
             )
             for job_data in job_batch_data
         ])
-        return list(input_id_batch), list(sampling_params_batch), list(job_id_batch)
+        return list(input_id_batch), list(sampling_params_batch), list(job_id_batch), list(image_data_batch), list(audio_data_batch), list(video_data_batch)
 
 
     def validate_chat_context(self, chat_context):
