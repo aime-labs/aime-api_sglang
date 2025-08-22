@@ -90,7 +90,11 @@ class SGLang():
         self.server_args = ServerArgs.from_cli_args(self.args)
         self.model_config = ModelConfig.from_server_args(self.server_args)
         self.llm_engine = sgl.Engine(server_args=self.server_args)
-        asyncio.run(self.run_engine())
+        try:
+            asyncio.run(self.run_engine())
+        except KeyboardInterrupt:
+            logging.info('KeyboardInterrupt triggered. Initiating shutdown sequence...')
+            self.api_worker.gracefully_exit()
 
 
     def get_gpu_name(self):
@@ -139,6 +143,8 @@ class SGLang():
             if job_batch_data:
                 asyncio.ensure_future(self.process_job_batch(job_batch_data))
             await asyncio.sleep(0.1)
+
+
 
 
     def error_callback(self, response):
@@ -319,7 +325,6 @@ class SGLang():
 
     def exit_callback(self):
         self.llm_engine.shutdown()
-        del self.llm_engine
         torch.cuda.empty_cache()
 
 
