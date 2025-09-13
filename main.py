@@ -201,6 +201,7 @@ class SGLang():
             input_length = meta_info.get('prompt_tokens', 0) or output.get('input_length')
             num_generated_tokens = meta_info.get('completion_tokens', 0)
             result = {
+                'model_name': self.args.model_label,
                 'num_generated_tokens': num_generated_tokens,
                 'max_seq_len': self.model_config.context_len,
                 'prompt_length': input_length,
