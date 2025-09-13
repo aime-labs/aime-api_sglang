@@ -9,14 +9,11 @@ import logging
 import torch
 
 import sglang as sgl
-from sglang.srt.conversation import chat_templates
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.test.test_utils import is_in_ci
-from sglang.utils import trim_overlap
-from sglang.lang.chat_template import get_chat_template_by_model_path
-from sglang.srt.hf_transformers_utils import get_tokenizer
+
 
 from aime_api_worker_interface import APIWorkerInterface
 
@@ -59,7 +56,6 @@ QUANTIZATIONS = [
     'uint64'
 ]
 
-logger = logging.getLogger(__name__)
 
 class SGLang():
     def __init__(self):
@@ -78,23 +74,27 @@ class SGLang():
             model_family=self.args.model_family, 
             model_type=self.args.model_type,
             model_repo_name=Path(self.args.model_path).name,
+            model_path=self.args.model,
             framework='SGLang',
             framework_version=sgl.version.__version__,
-            pytorch_version=torch.version.__version__
+            pytorch_version=torch.version.__version__,
+            auto_tokenize_inputs=True,
+            trust_remote_code=self.args.trust_remote_code,
+            use_fast_tokenizer=self.args.use_fast_tokenizer,
+            max_batch_size=self.args.max_batch_size,
+            max_context_length=self.args.context_length,
+            reject_high_context_length=False
         )
         self.progress_update_data = dict()
         self.last_progress_update = time.time()
         self.server_args = ServerArgs.from_cli_args(self.args)
         self.model_config = ModelConfig.from_server_args(self.server_args)
-        self.chat_template = get_chat_template_by_model_path(self.args.model_path)
         self.llm_engine = sgl.Engine(server_args=self.server_args)
-        self.tokenizer = get_tokenizer(
-            self.server_args.tokenizer_path,
-            tokenizer_mode=self.server_args.tokenizer_mode,
-            trust_remote_code=self.server_args.trust_remote_code,
-            revision=self.server_args.revision,
-        )
-        asyncio.run(self.run_engine())
+        try:
+            asyncio.run(self.run_engine())
+        except KeyboardInterrupt:
+            logging.info('KeyboardInterrupt triggered. Initiating shutdown sequence...')
+            self.api_worker.gracefully_exit()
 
 
     def get_gpu_name(self):
@@ -103,21 +103,16 @@ class SGLang():
 
     async def process_job_batch(self, job_batch_data):
         arrival_time = time.time()
-        valid_jobs, invalid_jobs  = self.validate_and_format_job_batch_data(job_batch_data)
-        for job_id, invalid_job in invalid_jobs.items():
-            logging.info(f'Job {self.format_job_id(job_id)} rejected: {invalid_job.get("error")}')
-            self.api_worker.send_job_results(
-                self.get_result(invalid_job, arrival_time, time.time()),
-                job_id=job_id,
-                wait_for_response=False,
-                error_callback=self.error_callback
-            )
-        if valid_jobs:
-            input_id_batch, sampling_params_batch, job_id_batch = self.get_parameter_batches(valid_jobs)
+        if job_batch_data:
+            input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = self.get_parameter_batches(job_batch_data)
+
             generator = await self.llm_engine.async_generate(
                 input_ids=input_id_batch,
                 sampling_params=sampling_params_batch,
-                stream=True
+                stream=True,
+                image_data=image_data_batch,
+                #audio_data=audio_data_batch,
+                #video_data=video_data_batch for later SGLang versions
             )
             logging.info(f'Job(s) {", ".join([self.format_job_id(job_id) for job_id in job_id_batch])} added.')
             start_time_processing = None
@@ -136,6 +131,10 @@ class SGLang():
                         error_callback=self.error_callback
                     )
                     self.progress_update_data.pop(job_id, None)
+            if self.args.flush_cache:
+                state = await self.llm_engine.tokenizer_manager.get_internal_state()
+                if state[0].get('load') == 0:
+                    await self.llm_engine.tokenizer_manager.flush_cache()
 
 
     async def run_engine(self):
@@ -143,7 +142,9 @@ class SGLang():
         for job_batch_data in job_request_generator:
             if job_batch_data:
                 asyncio.ensure_future(self.process_job_batch(job_batch_data))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
+
+
 
 
     def error_callback(self, response):
@@ -151,65 +152,20 @@ class SGLang():
         raise response
 
 
-    def validate_and_format_job_batch_data(self, job_batch_data):
-        valid_jobs = dict()
-        invalid_jobs = dict()
-        valid_prompt_input_batch = list()
-        valid_job_batch_data = list()
+    def get_parameter_batches(self, job_batch_data):
         
-        for job_data in job_batch_data:
-            prompt_input = job_data.get('prompt_input') or job_data.get('text')
-            chat_context = job_data.get('chat_context')
-            job_id = job_data.get('job_id')
-            if chat_context:
-                if not self.validate_chat_context(chat_context):
-                    invalid_jobs[job_id] = {
-                        'error': f'Dialog has invalid chat context format! Format should be '
-                                 f'[{{"role": "user/assistant/system", "content": "Message content"}}, ...]'
-                    }
-                else:
-                    if prompt_input:
-                        chat_context.append(
-                            {
-                                "role": "user", 
-                                "content": prompt_input
-                            }
-                        )
-                    
-                    valid_prompt_input_batch.append(self.chat_template.get_prompt(chat_context))
-                    valid_job_batch_data.append(job_data)
-
-            else:
-                valid_prompt_input_batch.append(prompt_input)
-                valid_job_batch_data.append(job_data)
-
-        prompt_input_ids_batch = self.tokenizer(valid_prompt_input_batch).get('input_ids')
-        for prompt_input_ids, job_data in zip(prompt_input_ids_batch, valid_job_batch_data):
-            job_id = job_data.get('job_id')
-            input_length = len(prompt_input_ids)
-            max_gen_tokens = job_data.get('max_gen_tokens')
-            if input_length < self.model_config.context_len:
-                valid_jobs[job_id] = {
-                    'input_ids': prompt_input_ids,
-                    'sampling_params': self.get_sampling_params(job_data, input_length)
-                }
-            else: 
-                invalid_jobs[job_id] = {
-                    'error': f'Requested token count exceeds the model\'s maximum context length of {self.model_config.context_len} tokens. '
-                             f'You requested a total of {input_length + max_gen_tokens} tokens: {input_length} '
-                             f'tokens from the input messages and {max_gen_tokens} tokens for the completion. '
-                             f'Please reduce the number of tokens in the input messages or the completion to fit within the limit.',
-                    'input_length': input_length
-                }
-        return valid_jobs, invalid_jobs
-
-
-    def get_parameter_batches(self, jobs):
-        input_id_batch, sampling_params_batch, job_id_batch = zip(*[
-            (job.get('input_ids'), job.get('sampling_params'), job_id)
-            for job_id, job in jobs.items()
+        input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = zip(*[
+            (
+                job_data.get('chat_context') or job_data.get('prompt_input', []),
+                self.get_sampling_params(job_data),
+                job_data.get('job_id'),
+                job_data.get('multimodal_data', {}).get('chat_context', {}).get('image', []),
+                job_data.get('multimodal_data', {}).get('chat_context', {}).get('audio', []),
+                job_data.get('multimodal_data', {}).get('chat_context', {}).get('video', [])
+            )
+            for job_data in job_batch_data
         ])
-        return list(input_id_batch), list(sampling_params_batch), list(job_id_batch)
+        return list(input_id_batch), list(sampling_params_batch), list(job_id_batch), list(image_data_batch), list(audio_data_batch), list(video_data_batch)
 
 
     def validate_chat_context(self, chat_context):
@@ -255,8 +211,7 @@ class SGLang():
                 'metrics': {
                     'in_num_tokens': input_length,
                     'out_num_tokens': num_generated_tokens, 
-                },
-                'model_name': self.args.model_label
+                }
             }
             if output.get('error'):
                 result['error'] = output['error']
@@ -266,7 +221,8 @@ class SGLang():
             return result
         
 
-    def get_sampling_params(self, job_data, input_length):
+    def get_sampling_params(self, job_data):
+        input_length = len(job_data.get('chat_context') or job_data.get('prompt_input', []))
         sampling_params_keys = inspect.signature(SamplingParams).parameters.keys()
         sampling_params = {key: job_data[key] for key in sampling_params_keys if key in job_data}
         sampling_params['max_new_tokens'] = min(job_data.get('max_gen_tokens'), self.model_config.context_len - input_length -1)
@@ -332,6 +288,14 @@ class SGLang():
             "--dev", action='store_true',
             help="Sets logger level to DEBUG",
         )
+        parser.add_argument(
+            "--flush_cache", action='store_true',
+            help="Resets cache before every request",
+        )
+        parser.add_argument(
+            "--use_fast_tokenizer", action='store_true',
+            help="Use fast tokenizer in API Worker Interface",
+        )
         args = parser.parse_args()
         args.model_path = args.model
         args.model_label = args.model_label or Path(args.model_path).name
@@ -361,7 +325,6 @@ class SGLang():
 
     def exit_callback(self):
         self.llm_engine.shutdown()
-        del self.llm_engine
         torch.cuda.empty_cache()
 
 
