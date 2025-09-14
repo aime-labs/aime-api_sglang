@@ -15,7 +15,7 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.test.test_utils import is_in_ci
 from sglang.utils import trim_overlap
-from sglang.lang.chat_template import get_chat_template_by_model_path
+from sglang.lang.chat_template import get_chat_template, get_chat_template_by_model_path
 from sglang.srt.hf_transformers_utils import get_tokenizer
 
 from aime_api_worker_interface import APIWorkerInterface
@@ -83,7 +83,7 @@ class SGLang():
         self.last_progress_update = time.time()
         self.server_args = ServerArgs.from_cli_args(self.args)
         self.model_config = ModelConfig.from_server_args(self.server_args)
-        self.chat_template = get_chat_template_by_model_path(self.args.model_path)
+        self.chat_template = get_chat_template('llama-4') # _by_model_path(self.args.model_path)
         self.llm_engine = sgl.Engine(server_args=self.server_args)
         self.tokenizer = get_tokenizer(
             self.server_args.tokenizer_path,
