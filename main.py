@@ -216,7 +216,11 @@ class SGLang():
             if output.get('error'):
                 result['error'] = output['error']
             elif output.get('text'):
-                result['text'] = output['text'].removeprefix('assistant\n\n')
+                text = output.get('text')
+                if text.startswith("analysis"): # Quick workaround for gpt-oss output format
+                    text = text.replace("analysis", "<think>", 1).replace("assistantfinal", "</think>", 1)
+
+                result['text'] = text.removeprefix('assistant\n\n')
 
             return result
         
