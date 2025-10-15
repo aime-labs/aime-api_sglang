@@ -59,6 +59,8 @@ QUANTIZATIONS = [
 class SGLang():
     def __init__(self):
         self.args = self.load_flags()
+        self.server_args = ServerArgs.from_cli_args(self.args)
+        self.model_config = ModelConfig.from_server_args(self.server_args)
         self.api_worker = APIWorkerInterface(
             self.args.api_server, 
             self.args.job_type, 
@@ -81,13 +83,11 @@ class SGLang():
             trust_remote_code=self.args.trust_remote_code,
             use_fast_tokenizer=self.args.use_fast_tokenizer,
             max_batch_size=self.args.max_batch_size,
-            max_context_length=self.args.context_length,
+            max_context_length=self.model_config.context_len,
             reject_high_context_length=False
         )
         self.progress_update_data = dict()
         self.last_progress_update = time.time()
-        self.server_args = ServerArgs.from_cli_args(self.args)
-        self.model_config = ModelConfig.from_server_args(self.server_args)
         self.llm_engine = sgl.Engine(server_args=self.server_args)
         try:
             asyncio.run(self.run_engine())
