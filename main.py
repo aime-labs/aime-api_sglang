@@ -14,7 +14,6 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.test.test_utils import is_in_ci
 
-
 from aime_api_worker_interface import APIWorkerInterface
 
 
@@ -105,7 +104,6 @@ class SGLang():
         arrival_time = time.time()
         if job_batch_data:
             input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = self.get_parameter_batches(job_batch_data)
-
             generator = await self.llm_engine.async_generate(
                 input_ids=input_id_batch,
                 sampling_params=sampling_params_batch,
@@ -116,6 +114,7 @@ class SGLang():
             )
             logging.info(f'Job(s) {", ".join([self.format_job_id(job_id) for job_id in job_id_batch])} added.')
             start_time_processing = None
+
             async for output in generator:
                 if output and not start_time_processing:
                     start_time_processing = time.time()
@@ -156,7 +155,7 @@ class SGLang():
         
         input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = zip(*[
             (
-                job_data.get('chat_context') or job_data.get('prompt_input', []),
+                job_data.get('chat_context') or job_data.get('text_context', []),
                 self.get_sampling_params(job_data),
                 job_data.get('job_id'),
                 job_data.get('multimodal_data', {}).get('chat_context', {}).get('image', []),
@@ -215,18 +214,13 @@ class SGLang():
             }
             if output.get('error'):
                 result['error'] = output['error']
-            elif output.get('text'):
-                text = output.get('text')
-                if text.startswith("analysis"): # Quick workaround for gpt-oss output format
-                    text = text.replace("analysis", "<think>", 1).replace("assistantfinal", "</think>", 1)
-
-                result['text'] = text.removeprefix('assistant\n\n')
-
+            elif output.get('output_ids'):
+                result['text'] = output.get('output_ids')
             return result
         
 
     def get_sampling_params(self, job_data):
-        input_length = len(job_data.get('chat_context') or job_data.get('prompt_input', []))
+        input_length = len(job_data.get('chat_context') or job_data.get('text_context', []))
         sampling_params_keys = inspect.signature(SamplingParams).parameters.keys()
         sampling_params = {key: job_data[key] for key in sampling_params_keys if key in job_data}
         sampling_params['max_new_tokens'] = min(job_data.get('max_gen_tokens'), self.model_config.context_len - input_length -1)
@@ -307,6 +301,7 @@ class SGLang():
         args.model_quantization = args.model_quantization or self.extract_quantization(args) or 'fp16'
         args.model_family = args.model_family or self.extract_family(args)
         args.max_running_requests = args.max_batch_size
+        args.skip_tokenizer_init = True
         return args
 
 
