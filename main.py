@@ -63,10 +63,12 @@ class SGLang():
         self.model_config = ModelConfig.from_server_args(self.server_args)
         self.api_worker = APIWorkerInterface(
             self.args.api_server, 
-            self.args.job_type, 
+            self.args.job_type,
             self.args.api_auth_key, 
             self.args.gpu_id, 
-            gpu_name=self.get_gpu_name(), 
+            gpu_name=torch.cuda.get_device_name(0), 
+            queue_name=self.args.queue_name,
+            num_gpus=self.args.tensor_parallel_size,
             worker_version=VERSION,
             exit_callback=self.exit_callback,
             model_label=self.args.model_label,
@@ -84,7 +86,8 @@ class SGLang():
             use_fast_tokenizer=self.args.use_fast_tokenizer,
             max_batch_size=self.args.max_batch_size,
             max_context_length=self.model_config.context_len,
-            reject_high_context_length=False
+            reject_high_context_length=False,
+            starts_with_think=self.args.starts_with_think
         )
         self.progress_update_data = dict()
         self.last_progress_update = time.time()
@@ -94,10 +97,6 @@ class SGLang():
         except KeyboardInterrupt:
             logging.info('KeyboardInterrupt triggered. Initiating shutdown sequence...')
             self.api_worker.gracefully_exit()
-
-
-    def get_gpu_name(self):
-        return f'{self.args.tensor_parallel_size}x{torch.cuda.get_device_name(0)}'
 
 
     async def process_job_batch(self, job_batch_data):
@@ -148,7 +147,6 @@ class SGLang():
 
     def error_callback(self, response):
         logging.error(response)
-        raise response
 
 
     def get_parameter_batches(self, job_batch_data):
@@ -189,8 +187,7 @@ class SGLang():
             self.api_worker.send_batch_progress(
                 num_generated_tokens_batch,
                 progress_result_batch,
-                job_batch_ids=job_id_batch,
-                progress_error_callback=self.error_callback
+                job_batch_ids=job_id_batch
             )
 
 
@@ -238,6 +235,10 @@ class SGLang():
             "--job_type", type=str, default=DEFAULT_WORKER_JOB_TYPE,
             help="Worker job type for the API Server"
         )
+        parser.add_argument(
+            "--queue_name", type=str,
+            help="Worker job type for the API Server"
+        )        
         parser.add_argument(
             "--model", type=str, required=True,
             help="The path of the model weights. This can be a local folder or a Hugging Face repo ID. Translates to --model-path in SGLang."
@@ -294,6 +295,11 @@ class SGLang():
             "--use_fast_tokenizer", action='store_true',
             help="Use fast tokenizer in API Worker Interface",
         )
+        parser.add_argument(
+            "--starts_with_think", type=lambda x: x.lower() == 'true', nargs='?', const=True, default=None,
+            help="Whether the model is a reasoning model and uses <think> / </think> tags. "
+                 "If omitted, defaults to value from received from endpoint config."
+         )
         args = parser.parse_args()
         args.model_path = args.model
         args.model_label = args.model_label or Path(args.model_path).name
@@ -323,7 +329,8 @@ class SGLang():
 
 
     def exit_callback(self):
-        self.llm_engine.shutdown()
+        if hasattr(self, 'llm_engine'):
+            self.llm_engine.shutdown()
         torch.cuda.empty_cache()
 
 
