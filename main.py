@@ -86,7 +86,6 @@ class SGLang():
             use_fast_tokenizer=self.args.use_fast_tokenizer,
             max_batch_size=self.args.max_batch_size,
             max_context_length=self.model_config.context_len,
-            reject_high_context_length=False,
             starts_with_think=self.args.starts_with_think
         )
         self.progress_update_data = dict()
