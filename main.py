@@ -220,6 +220,7 @@ class SGLang():
         sampling_params_keys = inspect.signature(SamplingParams).parameters.keys()
         sampling_params = {key: job_data[key] for key in sampling_params_keys if key in job_data}
         sampling_params['max_new_tokens'] = min(job_data.get('max_gen_tokens'), self.model_config.context_len - input_length -1)
+        sampling_params['stop_token_ids'] = [self.api_worker.tokenizer.convert_tokens_to_ids(self.api_worker.tokenizer.eos_token)]
         return sampling_params #SamplingParams(**sampling_params)
 
 
