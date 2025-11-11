@@ -152,7 +152,7 @@ class SGLang():
         
         input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = zip(*[
             (
-                job_data.get('chat_context') or job_data.get('text_context', []),
+                job_data.get('chat_context') or job_data.get('text_context') or [self.api_worker.tokenizer.convert_tokens_to_ids(self.api_worker.tokenizer.bos_token)],
                 self.get_sampling_params(job_data),
                 job_data.get('job_id'),
                 job_data.get('multimodal_data', {}).get('chat_context', {}).get('image', []),
