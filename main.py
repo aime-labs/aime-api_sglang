@@ -118,8 +118,21 @@ class SGLang():
                     start_time_processing = time.time()
                 job_id = job_id_batch[output.get('index')]
                 if not output.get('meta_info').get('finish_reason'):
-                    self.progress_update_data[job_id] = self.get_result(output, arrival_time, start_time_processing)
-                    self.update_progress()
+                    error = output.get('error')
+                    if not output or error:
+                        logging.error(f'Error in SGLang: {error}')
+                        self.api_worker.send_job_results(
+                            {
+                                'error': f'Error in SGLang: {output.get("error")}'
+                            },
+                            job_id=job_id,
+                            wait_for_response=False,
+                            error_callback=self.error_callback
+                        )
+                        self.progress_update_data.pop(job_id, None)
+                    else:
+                        self.progress_update_data[job_id] = self.get_result(output, arrival_time, start_time_processing)
+                        self.update_progress()
                 else:
                     self.api_worker.send_job_results(
                         self.get_result(output, arrival_time, start_time_processing),
