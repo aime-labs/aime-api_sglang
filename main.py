@@ -86,16 +86,27 @@ class SGLang():
             use_fast_tokenizer=self.args.use_fast_tokenizer,
             max_batch_size=self.args.max_batch_size,
             max_context_length=self.model_config.context_len,
-            starts_with_think=self.args.starts_with_think
+            starts_with_think=self.args.starts_with_think,
+            tokens_per_image=self.args.tokens_per_image
         )
         self.progress_update_data = dict()
         self.last_progress_update = time.time()
         self.llm_engine = sgl.Engine(server_args=self.server_args)
+        self.validate_context_length()
         try:
             asyncio.run(self.run_engine())
         except KeyboardInterrupt:
             logging.info('KeyboardInterrupt triggered. Initiating shutdown sequence...')
             self.api_worker.gracefully_exit()
+
+
+    def validate_context_length(self):
+
+        max_total_num_tokens = self.llm_engine.scheduler_info.get('max_total_num_tokens')
+        if max_total_num_tokens < self.model_config.context_len:
+            print(f'Maximum possible context length is {max_total_num_tokens} but is set to {self.model_config.context_len}. Change it to a lower value using --context-length.')
+            self.api_worker.gracefully_exit()
+
 
 
     async def process_job_batch(self, job_batch_data):
@@ -112,7 +123,6 @@ class SGLang():
             )
             logging.info(f'Job(s) {", ".join([self.format_job_id(job_id) for job_id in job_id_batch])} added.')
             start_time_processing = None
-
             async for output in generator:
                 if output and not start_time_processing:
                     start_time_processing = time.time()
@@ -312,7 +322,11 @@ class SGLang():
             "--starts_with_think", type=lambda x: x.lower() == 'true', nargs='?', const=True, default=None,
             help="Whether the model is a reasoning model and uses <think> / </think> tags. "
                  "If omitted, defaults to value from received from endpoint config."
-         )
+        )
+        parser.add_argument(
+            "--tokens_per_image", type=int, default=5000,
+            help="How much tokens are estimated for input images to validate input context length"
+        )
         args = parser.parse_args()
         args.model_path = args.model
         args.model_label = args.model_label or Path(args.model_path).name
