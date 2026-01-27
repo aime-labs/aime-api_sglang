@@ -118,8 +118,9 @@ class SGLang():
                 sampling_params=sampling_params_batch,
                 stream=True,
                 image_data=image_data_batch,
-                #audio_data=audio_data_batch,
-                #video_data=video_data_batch for later SGLang versions
+                audio_data=audio_data_batch,
+                video_data=video_data_batch,
+                rid=job_id_batch
             )
             logging.info(f'Job(s) {", ".join([self.format_job_id(job_id) for job_id in job_id_batch])} added.')
             start_time_processing = None
@@ -127,7 +128,26 @@ class SGLang():
                 if output and not start_time_processing:
                     start_time_processing = time.time()
                 job_id = job_id_batch[output.get('index')]
-                if not output.get('meta_info').get('finish_reason'):
+                if output.get('meta_info').get('finish_reason'):
+                    self.api_worker.send_job_results(
+                        self.get_result(output, arrival_time, start_time_processing),
+                        job_id=job_id,
+                        wait_for_response=False,
+                        error_callback=self.error_callback
+                    )
+                    self.progress_update_data.pop(job_id, None)
+                elif self.api_worker.is_job_canceled(job_id):
+                    self.llm_engine.tokenizer_manager.abort_request(rid=job_id)
+                    logging.info(f'Job  {job_id} canceled')
+                    self.api_worker.send_job_results(
+                        self.get_result(output, arrival_time, start_time_processing),
+                    job_id=job_id,
+                    wait_for_response=False,
+                    error_callback=self.error_callback
+                    )
+                    self.progress_update_data.pop(job_id, None)
+                    break
+                else:
                     error = output.get('error')
                     if not output or error:
                         logging.error(f'Error in SGLang: {error}')
@@ -141,16 +161,9 @@ class SGLang():
                         )
                         self.progress_update_data.pop(job_id, None)
                     else:
-                        self.progress_update_data[job_id] = self.get_result(output, arrival_time, start_time_processing)
-                        self.update_progress()
-                else:
-                    self.api_worker.send_job_results(
-                        self.get_result(output, arrival_time, start_time_processing),
-                        job_id=job_id,
-                        wait_for_response=False,
-                        error_callback=self.error_callback
-                    )
-                    self.progress_update_data.pop(job_id, None)
+                         self.progress_update_data[job_id] = self.get_result(output, arrival_time, start_time_processing)
+                         self.update_progress()
+
             if self.args.flush_cache:
                 state = await self.llm_engine.tokenizer_manager.get_internal_state()
                 if state[0].get('load') == 0:
