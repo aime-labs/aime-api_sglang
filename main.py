@@ -112,7 +112,7 @@ class SGLang():
     async def process_job_batch(self, job_batch_data):
         arrival_time = time.time()
         if job_batch_data:
-            input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = self.get_parameter_batches(job_batch_data)
+            input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch, output_format_batch = self.get_parameter_batches(job_batch_data)
             generator = await self.llm_engine.async_generate(
                 input_ids=input_id_batch,
                 sampling_params=sampling_params_batch,
@@ -125,12 +125,14 @@ class SGLang():
             logging.info(f'Job(s) {", ".join([self.format_job_id(job_id) for job_id in job_id_batch])} added.')
             start_time_processing = None
             async for output in generator:
+                idx = output.get('index')
                 if output and not start_time_processing:
                     start_time_processing = time.time()
-                job_id = job_id_batch[output.get('index')]
+                job_id = job_id_batch[idx]
+                output_format = output_format_batch[idx]
                 if output.get('meta_info').get('finish_reason'):
                     self.api_worker.send_job_results(
-                        self.get_result(output, arrival_time, start_time_processing),
+                        self.get_result(output, arrival_time, start_time_processing, output_format),
                         job_id=job_id,
                         wait_for_response=False,
                         error_callback=self.error_callback
@@ -140,7 +142,7 @@ class SGLang():
                     self.llm_engine.tokenizer_manager.abort_request(rid=job_id)
                     logging.info(f'Job  {job_id} canceled')
                     self.api_worker.send_job_results(
-                        self.get_result(output, arrival_time, start_time_processing),
+                        self.get_result(output, arrival_time, start_time_processing, output_format),
                     job_id=job_id,
                     wait_for_response=False,
                     error_callback=self.error_callback
@@ -161,7 +163,7 @@ class SGLang():
                         )
                         self.progress_update_data.pop(job_id, None)
                     else:
-                         self.progress_update_data[job_id] = self.get_result(output, arrival_time, start_time_processing)
+                         self.progress_update_data[job_id] = self.get_result(output, arrival_time, start_time_processing, output_format)
                          self.update_progress()
 
             if self.args.flush_cache:
@@ -178,26 +180,25 @@ class SGLang():
             await asyncio.sleep(0.1)
 
 
-
-
     def error_callback(self, response):
         logging.error(response)
 
 
     def get_parameter_batches(self, job_batch_data):
         
-        input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch = zip(*[
+        input_id_batch, sampling_params_batch, job_id_batch, image_data_batch, audio_data_batch, video_data_batch, output_format_batch = zip(*[
             (
                 job_data.get('chat_context') or job_data.get('text_context') or [self.api_worker.tokenizer.convert_tokens_to_ids(self.api_worker.tokenizer.bos_token)],
                 self.get_sampling_params(job_data),
                 job_data.get('job_id'),
-                job_data.get('multimodal_data', {}).get('chat_context', {}).get('image', []),
                 job_data.get('multimodal_data', {}).get('chat_context', {}).get('audio', []),
-                job_data.get('multimodal_data', {}).get('chat_context', {}).get('video', [])
+                job_data.get('multimodal_data', {}).get('chat_context', {}).get('video', []),
+                job_data.get('multimodal_data', {}).get('chat_context', {}).get('video', []),
+                job_data.get('chat_output_format', 'chatml')
             )
             for job_data in job_batch_data
         ])
-        return list(input_id_batch), list(sampling_params_batch), list(job_id_batch), list(image_data_batch), list(audio_data_batch), list(video_data_batch)
+        return list(input_id_batch), list(sampling_params_batch), list(job_id_batch), list(image_data_batch), list(audio_data_batch), list(video_data_batch), list(output_format_batch)
 
 
     def validate_chat_context(self, chat_context):
@@ -226,7 +227,7 @@ class SGLang():
             )
 
 
-    def get_result(self, output, arrival_time, start_time_processing):
+    def get_result(self, output, arrival_time, start_time_processing, output_format):
         if output:
             meta_info = output.get('meta_info', {})
             input_length = meta_info.get('prompt_tokens', 0) or output.get('input_length')
@@ -247,7 +248,10 @@ class SGLang():
             if output.get('error'):
                 result['error'] = output['error']
             elif output.get('output_ids'):
-                result['text'] = output.get('output_ids')
+                if output_format.lower() == 'json':
+                    result['chat_response'] = output.get('output_ids')
+                else:
+                    result['text'] = output.get('output_ids')
             return result
         
 
